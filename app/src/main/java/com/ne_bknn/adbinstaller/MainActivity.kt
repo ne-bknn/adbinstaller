@@ -489,7 +489,7 @@ private fun AppScaffold(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("ADB Installer") },
+                title = { Text("ADB Installer ${BuildConfig.GIT_SHA}") },
                 actions = {
                     if (isBusy) {
                         CircularProgressIndicator(modifier = Modifier.padding(end = 16.dp))

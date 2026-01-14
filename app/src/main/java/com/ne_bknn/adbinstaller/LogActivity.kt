@@ -58,7 +58,7 @@ private fun LogScreen() {
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("Logs") })
+            TopAppBar(title = { Text("Logs (${BuildConfig.GIT_SHA})") })
         },
         modifier = Modifier.fillMaxSize(),
     ) { padding ->

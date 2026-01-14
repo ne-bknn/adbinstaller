@@ -3,11 +3,23 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.android)
 }
 
+fun gitShaOrUnknown(): String {
+    return try {
+        val out = providers.exec {
+            commandLine("git", "rev-parse", "--short", "HEAD")
+        }.standardOutput.asText.get()
+        out.trim().ifBlank { "unknown" }
+    } catch (_: Throwable) {
+        "unknown"
+    }
+}
+
 android {
     namespace = "com.ne_bknn.adbinstaller"
     compileSdk = 34
 
     defaultConfig {
+        buildConfigField("String", "GIT_SHA", "\"${gitShaOrUnknown()}\"")
         applicationId = "com.ne_bknn.adbinstaller"
         minSdk = 34
         targetSdk = 34
@@ -38,6 +50,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.1"
