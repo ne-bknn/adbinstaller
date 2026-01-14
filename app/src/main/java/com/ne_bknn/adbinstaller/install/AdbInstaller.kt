@@ -22,6 +22,8 @@ class AdbInstaller(
     var onLog: ((String) -> Unit)? = null
     var traceEnabled: Boolean = false
     private var adb: AdbConnection? = null
+    private var connectedHost: String? = null
+    private var connectedPort: Int? = null
 
     fun pair(host: String, pairingPort: Int, pairingCode: String) {
         withTraceLevel {
@@ -86,11 +88,24 @@ class AdbInstaller(
             }
 
             AppLog.i(TAG, "Connected.", ui = onLog)
+            connectedHost = host
+            connectedPort = connectPort
         }
     }
 
+    fun ensureConnected(host: String, connectPort: Int) {
+        val existing = adb
+        val ok = try {
+            existing != null && existing.isConnectionEstablished()
+        } catch (_: Throwable) {
+            false
+        }
+        if (ok && connectedHost == host && connectedPort == connectPort) return
+        connect(host = host, connectPort = connectPort)
+    }
+
     fun install(apk: ApkSource) {
-        val adb = requireNotNull(adb) { "Not connected. Run Connect first." }
+        val adb = requireNotNull(adb) { "Not connected." }
         log("Installing… ${apk.displayName} (${apk.sizeBytes} bytes)")
 
         val remoteName = "adbinstaller_${System.currentTimeMillis()}.apk"

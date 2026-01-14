@@ -123,7 +123,7 @@ private fun MainScreen(
     var lastNotifiedKey by rememberSaveable { mutableStateOf<String?>(null) }
     var lastNotifiedAtMs by rememberSaveable { mutableStateOf(0L) }
 
-    // Step B: Connect
+    // Connect port (auto-filled via mDNS). Used for auto-connect on install.
     var connectPortText by rememberSaveable { mutableStateOf("") }
 
     // Step C: Pick + Install
@@ -385,40 +385,9 @@ private fun MainScreen(
                 ) { Text("Pair") }
 
                 Spacer(Modifier.height(12.dp))
-                StepHeader(title = "Step B — Connect") {
-                    Text("Use the port shown under Wireless debugging → IP address & port.")
-                }
+                StepHeader(title = "Step C — Pick & Install (.apk)") {}
 
                 Text("Connect port (auto): ${connectPortText.ifEmpty { "?" }}")
-
-                Button(
-                    enabled = !isBusy &&
-                        host.isNotBlank() &&
-                        connectPortText.toIntOrNull() != null,
-                    onClick = {
-                        scope.launch {
-                            isBusy = true
-                            try {
-                                discoveredDevices.firstOrNull { it.serviceName == selectedServiceName }?.let {
-                                    applyDevice(it)
-                                }
-                                val port = connectPortText.toIntOrNull() ?: error("Invalid connect port")
-                                withContext(Dispatchers.IO) {
-                                    installer.connect(host = host, connectPort = port)
-                                }
-                            } catch (t: Throwable) {
-                                logStore.append("Connect failed: ${t.message ?: t::class.java.simpleName}")
-                                AppLog.e("AdbInstaller", "Connect failed (caught in UI)", t)
-                                logStore.append(AppLog.throwableToMultilineString(t))
-                            } finally {
-                                isBusy = false
-                            }
-                        }
-                    }
-                ) { Text("Connect") }
-
-                Spacer(Modifier.height(12.dp))
-                StepHeader(title = "Step C — Pick & Install (.apk)") {}
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
@@ -436,6 +405,9 @@ private fun MainScreen(
                                 isBusy = true
                                 try {
                                     withContext(Dispatchers.IO) {
+                                        val connectPort = connectPortText.toIntOrNull()
+                                            ?: error("Connect port unknown (not discovered yet)")
+                                        installer.ensureConnected(host = host, connectPort = connectPort)
                                         installer.install(apk)
                                     }
                                 } catch (t: Throwable) {
