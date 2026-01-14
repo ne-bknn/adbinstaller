@@ -385,34 +385,12 @@ private fun MainScreen(
                         ) { Text("Open Wireless debugging") }
                     }
 
-                    Button(
-                        enabled = !isBusy,
-                        onClick = {
-                            if (!PairingNotification.canPostNotifications(context)) {
-                                notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                return@Button
-                            }
-
-                            val port = pairingPortText.toIntOrNull()
-                            if (host.isBlank() || port == null) {
-                                logStore.append("Select a device so host+pairing port are known.")
-                                return@Button
-                            }
-                            val ok = PairingNotification.show(
-                                context = context,
-                                host = host,
-                                pairingPort = port,
-                                connectPort = connectPortText.toIntOrNull(),
-                                serviceName = selectedServiceName,
-                                onStatus = { msg -> logStore.append(msg.trimEnd()) },
-                            )
-                            if (!ok) {
-                                // If notifications are blocked at the OS/channel level, help user jump there.
-                                logStore.append("If you don't see a permission prompt, notifications may be blocked in Settings.")
-                                PairingNotification.openChannelNotificationSettings(context)
-                            }
-                        },
-                    ) { Text("PIN via notification") }
+                    if (!PairingNotification.canPostNotifications(context)) {
+                        Button(
+                            enabled = !isBusy,
+                            onClick = { notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                        ) { Text("Grant notifications permission") }
+                    }
                 }
 
                 StepHeader(title = "Auto-detect device (mDNS)") {
