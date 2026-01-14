@@ -29,6 +29,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -40,13 +41,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.ne_bknn.adbinstaller.apk.ApkSource
 import com.ne_bknn.adbinstaller.install.AdbInstaller
 import com.ne_bknn.adbinstaller.logging.AppLog
+import com.ne_bknn.adbinstaller.logging.LogStore
 import com.ne_bknn.adbinstaller.mdns.AdbMdnsDiscovery
 import com.ne_bknn.adbinstaller.notifications.PairingNotification
 import com.ne_bknn.adbinstaller.ui.theme.ADBInstallerTheme
@@ -133,14 +134,14 @@ private fun MainScreen(
     var selectedApk by remember { mutableStateOf<ApkSource?>(null) }
 
     var isBusy by remember { mutableStateOf(false) }
-    var statusLog by remember { mutableStateOf("Ready.\n") }
+    val logStore = remember { LogStore(context.applicationContext) }
 
     val installer = remember { AdbInstaller(context.applicationContext) }
 
     val notifPermission = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        statusLog += if (granted) "Notifications permission granted.\n" else "Notifications permission denied.\n"
+        logStore.append(if (granted) "Notifications permission granted." else "Notifications permission denied.")
     }
 
     val apkPicker = rememberLauncherForActivityResult(
@@ -152,9 +153,9 @@ private fun MainScreen(
             try {
                 val apk = withContext(Dispatchers.IO) { ApkSource.fromUri(context, uri) }
                 selectedApk = apk
-                statusLog += "Picked APK: ${apk.displayName} (${apk.sizeBytes} bytes)\n"
+                logStore.append("Picked APK: ${apk.displayName} (${apk.sizeBytes} bytes)")
             } catch (t: Throwable) {
-                statusLog += "Pick failed: ${t.message ?: t::class.java.simpleName}\n"
+                logStore.append("Pick failed: ${t.message ?: t::class.java.simpleName}")
             } finally {
                 isBusy = false
             }
@@ -162,13 +163,13 @@ private fun MainScreen(
     }
 
     LaunchedEffect(Unit) {
-        installer.onLog = { line -> statusLog += line.trimEnd() + "\n" }
+        installer.onLog = { line -> logStore.append(line.trimEnd()) }
     }
 
     LaunchedEffect(traceLogs) {
         installer.traceEnabled = traceLogs
         AppLog.level = if (traceLogs) AppLog.Level.TRACE else AppLog.Level.INFO
-        statusLog += if (traceLogs) "Trace logs enabled.\n" else "Trace logs disabled.\n"
+        logStore.append(if (traceLogs) "Trace logs enabled." else "Trace logs disabled.")
     }
 
     LaunchedEffect(incoming) {
@@ -185,7 +186,7 @@ private fun MainScreen(
         incoming.connectPort?.let { connectPortText = it.toString() }
         incoming.pairingCode?.let { pairingCode = it }
 
-        statusLog += "Received pairing data from notification.\n"
+        logStore.append("Received pairing data from notification.")
         onConsumeIncoming()
     }
 
@@ -233,7 +234,7 @@ private fun MainScreen(
                                     pairingPort = p,
                                     connectPort = candidate.connectPort,
                                     serviceName = candidate.serviceName,
-                                    onStatus = { msg -> statusLog += msg.trimEnd() + "\n" },
+                                    onStatus = { msg -> logStore.append(msg.trimEnd()) },
                                 )
                                 lastNotifiedKey = key
                                 lastNotifiedAtMs = now
@@ -242,14 +243,18 @@ private fun MainScreen(
                     }
                 }
             },
-            onLog = { line -> statusLog += line.trimEnd() + "\n" },
+            onLog = { line -> logStore.append(line.trimEnd()) },
         )
         onDispose { discovery.close() }
     }
 
     AppScaffold(
         isBusy = isBusy,
-        statusLog = statusLog,
+        onOpenLogs = {
+            context.startActivity(
+                Intent(context, LogActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        },
         content = { padding ->
             Column(
                 modifier = Modifier
@@ -284,7 +289,7 @@ private fun MainScreen(
                                     false
                                 }
                             }
-                            if (!launched) statusLog += "Could not open settings.\n"
+                            if (!launched) logStore.append("Could not open settings.")
                         },
                     ) { Text("Open Wireless debugging") }
 
@@ -298,7 +303,7 @@ private fun MainScreen(
 
                             val port = pairingPortText.toIntOrNull()
                             if (host.isBlank() || port == null) {
-                                statusLog += "Select a device (or enable Advanced) so host+pairing port are known.\n"
+                                logStore.append("Select a device (or enable Advanced) so host+pairing port are known.")
                                 return@Button
                             }
                             val ok = PairingNotification.show(
@@ -307,11 +312,11 @@ private fun MainScreen(
                                 pairingPort = port,
                                 connectPort = connectPortText.toIntOrNull(),
                                 serviceName = selectedServiceName,
-                                onStatus = { msg -> statusLog += msg.trimEnd() + "\n" },
+                                onStatus = { msg -> logStore.append(msg.trimEnd()) },
                             )
                             if (!ok) {
                                 // If notifications are blocked at the OS/channel level, help user jump there.
-                                statusLog += "If you don't see a permission prompt, notifications may be blocked in Settings.\n"
+                                logStore.append("If you don't see a permission prompt, notifications may be blocked in Settings.")
                                 PairingNotification.openChannelNotificationSettings(context)
                             }
                         },
@@ -432,12 +437,10 @@ private fun MainScreen(
                                     installer.pair(host = host, pairingPort = port, pairingCode = pairingCode)
                                 }
                             } catch (t: Throwable) {
-                                statusLog += "Pair failed: ${t.message ?: t::class.java.simpleName}\n"
-                                if (traceLogs) {
-                                    // Also emit to logcat so `adb logcat AdbInstaller:V '*':S` captures it.
-                                    AppLog.e("AdbInstaller", "Pair failed (caught in UI)", t)
-                                    statusLog += AppLog.throwableToMultilineString(t) + "\n"
-                                }
+                                logStore.append("Pair failed: ${t.message ?: t::class.java.simpleName}")
+                                // Also emit to logcat so `adb logcat AdbInstaller:V '*':S` captures it.
+                                AppLog.e("AdbInstaller", "Pair failed (caught in UI)", t)
+                                if (traceLogs) logStore.append(AppLog.throwableToMultilineString(t))
                             } finally {
                                 isBusy = false
                             }
@@ -480,11 +483,9 @@ private fun MainScreen(
                                     installer.connect(host = host, connectPort = port)
                                 }
                             } catch (t: Throwable) {
-                                statusLog += "Connect failed: ${t.message ?: t::class.java.simpleName}\n"
-                                if (traceLogs) {
-                                    AppLog.e("AdbInstaller", "Connect failed (caught in UI)", t)
-                                    statusLog += AppLog.throwableToMultilineString(t) + "\n"
-                                }
+                                logStore.append("Connect failed: ${t.message ?: t::class.java.simpleName}")
+                                AppLog.e("AdbInstaller", "Connect failed (caught in UI)", t)
+                                if (traceLogs) logStore.append(AppLog.throwableToMultilineString(t))
                             } finally {
                                 isBusy = false
                             }
@@ -514,11 +515,9 @@ private fun MainScreen(
                                         installer.install(apk)
                                     }
                                 } catch (t: Throwable) {
-                                    statusLog += "Install failed: ${t.message ?: t::class.java.simpleName}\n"
-                                    if (traceLogs) {
-                                        AppLog.e("AdbInstaller", "Install failed (caught in UI)", t)
-                                        statusLog += AppLog.throwableToMultilineString(t) + "\n"
-                                    }
+                                    logStore.append("Install failed: ${t.message ?: t::class.java.simpleName}")
+                                    AppLog.e("AdbInstaller", "Install failed (caught in UI)", t)
+                                    if (traceLogs) logStore.append(AppLog.throwableToMultilineString(t))
                                 } finally {
                                     isBusy = false
                                 }
@@ -549,16 +548,9 @@ fun GreetingPreview() {
 @Composable
 private fun AppScaffold(
     isBusy: Boolean,
-    statusLog: String,
+    onOpenLogs: () -> Unit,
     content: @Composable (androidx.compose.foundation.layout.PaddingValues) -> Unit,
 ) {
-    val screenHeightDp = LocalConfiguration.current.screenHeightDp
-    val logScroll = rememberScrollState()
-    LaunchedEffect(statusLog.length) {
-        // Keep the view anchored to the newest logs.
-        logScroll.scrollTo(logScroll.maxValue)
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -567,27 +559,13 @@ private fun AppScaffold(
                     if (isBusy) {
                         CircularProgressIndicator(modifier = Modifier.padding(end = 16.dp))
                     }
+                    IconButton(onClick = onOpenLogs) {
+                        Text("Logs")
+                    }
                 }
             )
         },
         modifier = Modifier.fillMaxSize(),
-        bottomBar = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height((screenHeightDp.dp * 0.5f))
-                    .padding(12.dp),
-            ) {
-                Text("Status")
-                Text(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .verticalScroll(logScroll),
-                    text = statusLog.takeLast(8000),
-                )
-            }
-        },
         content = content,
     )
 }
