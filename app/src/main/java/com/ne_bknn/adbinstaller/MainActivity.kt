@@ -361,27 +361,29 @@ private fun MainScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Button(
-                        enabled = !isBusy,
-                        onClick = {
-                            // Best-effort: OEMs differ. Try specific action first, then fall back.
-                            val intents = listOf(
-                                Intent("android.settings.WIRELESS_DEBUGGING_SETTINGS"),
-                                Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
-                                Intent(Settings.ACTION_SETTINGS),
-                            ).map { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                    if (!isPaired) {
+                        Button(
+                            enabled = !isBusy,
+                            onClick = {
+                                // Best-effort: OEMs differ. Try specific action first, then fall back.
+                                val intents = listOf(
+                                    Intent("android.settings.WIRELESS_DEBUGGING_SETTINGS"),
+                                    Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
+                                    Intent(Settings.ACTION_SETTINGS),
+                                ).map { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
 
-                            val launched = intents.any { i ->
-                                try {
-                                    context.startActivity(i)
-                                    true
-                                } catch (_: ActivityNotFoundException) {
-                                    false
+                                val launched = intents.any { i ->
+                                    try {
+                                        context.startActivity(i)
+                                        true
+                                    } catch (_: ActivityNotFoundException) {
+                                        false
+                                    }
                                 }
-                            }
-                            if (!launched) logStore.append("Could not open settings.")
-                        },
-                    ) { Text("Open Wireless debugging") }
+                                if (!launched) logStore.append("Could not open settings.")
+                            },
+                        ) { Text("Open Wireless debugging") }
+                    }
 
                     Button(
                         enabled = !isBusy,
