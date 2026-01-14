@@ -26,8 +26,6 @@ object PairingNotification {
     const val EXTRA_CONNECT_PORT = "extra_connect_port"
     const val EXTRA_SERVICE_NAME = "extra_service_name"
 
-    const val EXTRA_PAIRING_CODE = "extra_pairing_code"
-
     const val REMOTE_INPUT_KEY_CODE = "remote_input_pairing_code"
 
     const val NOTIFICATION_ID_PROGRESS = 1002

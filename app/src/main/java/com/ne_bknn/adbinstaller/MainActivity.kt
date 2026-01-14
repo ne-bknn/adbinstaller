@@ -55,7 +55,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class IncomingData(
-    val pairingCode: String? = null,
     val host: String? = null,
     val pairingPort: Int? = null,
     val connectPort: Int? = null,
@@ -64,13 +63,11 @@ data class IncomingData(
     companion object {
         fun fromIntent(intent: Intent?): IncomingData {
             if (intent == null) return IncomingData()
-            val pairingCode = intent.getStringExtra(PairingNotification.EXTRA_PAIRING_CODE)
             val host = intent.getStringExtra(PairingNotification.EXTRA_HOST)
             val pairingPort = intent.getIntExtra(PairingNotification.EXTRA_PAIRING_PORT, -1).takeIf { it > 0 }
             val connectPort = intent.getIntExtra(PairingNotification.EXTRA_CONNECT_PORT, -1).takeIf { it > 0 }
             val serviceName = intent.getStringExtra(PairingNotification.EXTRA_SERVICE_NAME)
             return IncomingData(
-                pairingCode = pairingCode,
                 host = host,
                 pairingPort = pairingPort,
                 connectPort = connectPort,
@@ -115,7 +112,6 @@ private fun MainScreen(
     // Step A: Pair
     var host by rememberSaveable { mutableStateOf("") }
     var pairingPortText by rememberSaveable { mutableStateOf("") }
-    var pairingCode by rememberSaveable { mutableStateOf("") }
 
     // Auto-discovery (mDNS)
     var discoveredDevices by remember { mutableStateOf<List<AdbMdnsDiscovery.Device>>(emptyList()) }
@@ -174,8 +170,7 @@ private fun MainScreen(
     LaunchedEffect(incoming) {
         // Apply pairing details received from notification.
         val any =
-            (incoming.pairingCode != null) ||
-                (incoming.host != null) ||
+            (incoming.host != null) ||
                 (incoming.pairingPort != null) ||
                 (incoming.connectPort != null)
         if (!any) return@LaunchedEffect
@@ -183,7 +178,6 @@ private fun MainScreen(
         incoming.host?.let { host = it }
         incoming.pairingPort?.let { pairingPortText = it.toString() }
         incoming.connectPort?.let { connectPortText = it.toString() }
-        incoming.pairingCode?.let { pairingCode = it }
 
         logStore.append("Received pairing data from notification.")
         onConsumeIncoming()
@@ -390,42 +384,6 @@ private fun MainScreen(
                         }
                     }
                 }
-
-                OutlinedTextField(
-                    modifier = Modifier.fillMaxWidth(),
-                    value = pairingCode,
-                    onValueChange = { pairingCode = it },
-                    label = { Text("Pairing code (PIN)") },
-                    singleLine = true,
-                )
-
-                Button(
-                    enabled = !isBusy &&
-                        pairingCode.isNotBlank() &&
-                        host.isNotBlank() &&
-                        pairingPortText.toIntOrNull() != null,
-                    onClick = {
-                        scope.launch {
-                            isBusy = true
-                            try {
-                                discoveredDevices.firstOrNull { it.serviceName == selectedServiceName }?.let {
-                                    applyDevice(it)
-                                }
-                                val port = pairingPortText.toIntOrNull() ?: error("Invalid pairing port")
-                                withContext(Dispatchers.IO) {
-                                    installer.pair(host = host, pairingPort = port, pairingCode = pairingCode)
-                                }
-                            } catch (t: Throwable) {
-                                logStore.append("Pair failed: ${t.message ?: t::class.java.simpleName}")
-                                // Also emit to logcat so `adb logcat AdbInstaller:V '*':S` captures it.
-                                AppLog.e("AdbInstaller", "Pair failed (caught in UI)", t)
-                                logStore.append(AppLog.throwableToMultilineString(t))
-                            } finally {
-                                isBusy = false
-                            }
-                        }
-                    }
-                ) { Text("Pair") }
 
                 Spacer(Modifier.height(12.dp))
                 StepHeader(title = "Step C — Pick & Install (.apk)") {}
