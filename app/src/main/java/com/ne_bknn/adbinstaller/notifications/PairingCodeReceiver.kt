@@ -7,6 +7,7 @@ import androidx.core.app.RemoteInput
 import androidx.core.app.NotificationManagerCompat
 import com.ne_bknn.adbinstaller.install.AdbInstaller
 import com.ne_bknn.adbinstaller.logging.AppLog
+import com.ne_bknn.adbinstaller.state.PairingStateStore
 
 class PairingCodeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -56,6 +57,7 @@ class PairingCodeReceiver : BroadcastReceiver() {
                 }
 
                 installer.pair(host = host, pairingPort = pairingPort, pairingCode = code)
+                PairingStateStore(context.applicationContext).setPaired(true)
 
                 PairingNotification.showPairingProgress(
                     context,

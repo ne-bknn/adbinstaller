@@ -24,11 +24,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Help
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -44,12 +51,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.ne_bknn.adbinstaller.apk.ApkSource
+import com.ne_bknn.adbinstaller.crypto.SoftwareBackedKeys
 import com.ne_bknn.adbinstaller.install.AdbInstaller
 import com.ne_bknn.adbinstaller.logging.AppLog
 import com.ne_bknn.adbinstaller.logging.LogStore
 import com.ne_bknn.adbinstaller.mdns.AdbMdnsDiscovery
 import com.ne_bknn.adbinstaller.notifications.PairingNotification
+import com.ne_bknn.adbinstaller.state.PairingStateStore
 import com.ne_bknn.adbinstaller.ui.theme.ADBInstallerTheme
+import io.github.muntashirakon.adb.AdbPairingRequiredException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -132,6 +142,9 @@ private fun MainScreen(
     var adbStatusText by remember { mutableStateOf("ADB: disconnected") }
     var isAdbConnected by remember { mutableStateOf(false) }
     var lastAutoConnectAtMs by remember { mutableStateOf(0L) }
+    val pairingState = remember { PairingStateStore(context.applicationContext) }
+    var isPaired by remember { mutableStateOf(pairingState.isPaired()) }
+    var hasKeys by remember { mutableStateOf(SoftwareBackedKeys.hasKeys(context.applicationContext, AdbInstaller.KEY_BASENAME)) }
 
     val notifPermission = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -165,6 +178,8 @@ private fun MainScreen(
         installer.traceEnabled = true
         AppLog.level = AppLog.Level.TRACE
         logStore.append("Trace logs enabled.")
+        hasKeys = SoftwareBackedKeys.hasKeys(context.applicationContext, AdbInstaller.KEY_BASENAME)
+        isPaired = pairingState.isPaired()
     }
 
     LaunchedEffect(incoming) {
@@ -238,11 +253,30 @@ private fun MainScreen(
                                     }
                                     isAdbConnected = true
                                     adbStatusText = "ADB: connected to $connectKey"
+                                    isPaired = true
+                                    pairingState.setPaired(true)
                                 } catch (t: Throwable) {
                                     isAdbConnected = false
-                                    adbStatusText = "ADB: disconnected (connect failed)"
+                                    val pairingRequired = t is AdbPairingRequiredException
+                                    adbStatusText = if (pairingRequired) {
+                                        "ADB: pairing required"
+                                    } else {
+                                        "ADB: disconnected (connect failed)"
+                                    }
                                     logStore.append("Auto-connect failed: ${t.message ?: t::class.java.simpleName}")
                                     AppLog.e("AdbInstaller", "Auto-connect failed", t)
+                                    hasKeys = SoftwareBackedKeys.hasKeys(context.applicationContext, AdbInstaller.KEY_BASENAME)
+                                    if (pairingRequired) {
+                                        isPaired = false
+                                        pairingState.setPaired(false)
+                                        PairingNotification.showPairingProgress(
+                                            context = context,
+                                            host = h,
+                                            pairingPort = p ?: -1,
+                                            message = "Pairing required. On phone: Wireless debugging → Pair device with pairing code.",
+                                            isOngoing = false,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -294,6 +328,31 @@ private fun MainScreen(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                // Status strip
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Key,
+                        contentDescription = null,
+                    )
+                    Text(if (hasKeys) "Keys: OK" else "Keys: missing")
+
+                    Icon(
+                        imageVector = if (isPaired) Icons.Filled.CheckCircle else Icons.Filled.Help,
+                        contentDescription = null,
+                    )
+                    Text(if (isPaired) "Paired" else "Not paired")
+
+                    Icon(
+                        imageVector = if (isAdbConnected) Icons.Filled.Link else Icons.Filled.Close,
+                        contentDescription = null,
+                    )
+                    Text(if (isAdbConnected) "Connected" else "Disconnected")
+                }
+
                 StepHeader(title = "Step A — Pair (Wireless debugging)") {
                     Text("Enable Developer Options → Wireless debugging → Pair device with pairing code.")
                 }

@@ -115,5 +115,13 @@ class SoftwareBackedKeys(
             Security.addProvider(BouncyCastleProvider())
         }
     }
+
+    companion object {
+        fun hasKeys(context: Context, baseName: String): Boolean {
+            val privFile = File(context.filesDir, "$baseName.pk8")
+            val certFile = File(context.filesDir, "$baseName.crt")
+            return privFile.exists() && certFile.exists() && privFile.length() > 0 && certFile.length() > 0
+        }
+    }
 }
 

@@ -157,9 +157,9 @@ class AdbInstaller(
         }
     }
 
-    private companion object {
-        private const val TAG = "AdbInstaller"
+    companion object {
         const val KEY_BASENAME = "adbinstaller_adb_tls"
+        private const val TAG = "AdbInstaller"
     }
 }
 
