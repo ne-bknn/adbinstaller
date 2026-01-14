@@ -45,11 +45,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.ne_bknn.adbinstaller.apk.ApkSource
 import com.ne_bknn.adbinstaller.crypto.SoftwareBackedKeys
 import com.ne_bknn.adbinstaller.install.AdbInstaller
@@ -145,11 +148,14 @@ private fun MainScreen(
     val pairingState = remember { PairingStateStore(context.applicationContext) }
     var isPaired by remember { mutableStateOf(pairingState.isPaired()) }
     var hasKeys by remember { mutableStateOf(SoftwareBackedKeys.hasKeys(context.applicationContext, AdbInstaller.KEY_BASENAME)) }
+    var hasNotifPermission by remember { mutableStateOf(PairingNotification.canPostNotifications(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     val notifPermission = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
         logStore.append(if (granted) "Notifications permission granted." else "Notifications permission denied.")
+        hasNotifPermission = granted
     }
 
     val apkPicker = rememberLauncherForActivityResult(
@@ -180,6 +186,17 @@ private fun MainScreen(
         logStore.append("Trace logs enabled.")
         hasKeys = SoftwareBackedKeys.hasKeys(context.applicationContext, AdbInstaller.KEY_BASENAME)
         isPaired = pairingState.isPaired()
+        hasNotifPermission = PairingNotification.canPostNotifications(context)
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasNotifPermission = PairingNotification.canPostNotifications(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 
     LaunchedEffect(incoming) {
@@ -385,7 +402,7 @@ private fun MainScreen(
                         ) { Text("Open Wireless debugging") }
                     }
 
-                    if (!PairingNotification.canPostNotifications(context)) {
+                    if (!hasNotifPermission) {
                         Button(
                             enabled = !isBusy,
                             onClick = { notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
