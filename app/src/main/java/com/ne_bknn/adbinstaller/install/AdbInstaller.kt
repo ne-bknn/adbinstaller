@@ -25,6 +25,20 @@ class AdbInstaller(
     private var connectedHost: String? = null
     private var connectedPort: Int? = null
 
+    fun isConnected(): Boolean {
+        val a = adb ?: return false
+        return try {
+            a.isConnectionEstablished()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    fun isConnectedTo(host: String, connectPort: Int): Boolean {
+        if (!isConnected()) return false
+        return connectedHost == host && connectedPort == connectPort
+    }
+
     fun pair(host: String, pairingPort: Int, pairingCode: String) {
         withTraceLevel {
             AppLog.i(TAG, "Pairing… host=$host pairingPort=$pairingPort", ui = onLog)

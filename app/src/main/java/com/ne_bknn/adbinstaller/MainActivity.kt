@@ -133,6 +133,9 @@ private fun MainScreen(
     val logStore = remember { LogStore(context.applicationContext) }
 
     val installer = remember { AdbInstaller(context.applicationContext) }
+    var adbStatusText by remember { mutableStateOf("ADB: disconnected") }
+    var isAdbConnected by remember { mutableStateOf(false) }
+    var lastAutoConnectAtMs by remember { mutableStateOf(0L) }
 
     val notifPermission = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -214,6 +217,41 @@ private fun MainScreen(
                     ?: list.singleOrNull()
                 val h = candidate?.hostString
                 val p = candidate?.pairingPort
+                val c = candidate?.connectPort
+
+                // Background auto-connect + UI indication.
+                if (!h.isNullOrBlank() && c != null) {
+                    val connectKey = "$h:$c"
+                    if (installer.isConnectedTo(h, c)) {
+                        isAdbConnected = true
+                        adbStatusText = "ADB: connected to $connectKey"
+                    } else {
+                        isAdbConnected = false
+                        adbStatusText = "ADB: connecting to $connectKey…"
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastAutoConnectAtMs > 10_000) {
+                            lastAutoConnectAtMs = now
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        installer.ensureConnected(host = h, connectPort = c)
+                                    }
+                                    isAdbConnected = true
+                                    adbStatusText = "ADB: connected to $connectKey"
+                                } catch (t: Throwable) {
+                                    isAdbConnected = false
+                                    adbStatusText = "ADB: disconnected (connect failed)"
+                                    logStore.append("Auto-connect failed: ${t.message ?: t::class.java.simpleName}")
+                                    AppLog.e("AdbInstaller", "Auto-connect failed", t)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    isAdbConnected = false
+                    adbStatusText = "ADB: waiting for connect port discovery"
+                }
                 if (!h.isNullOrBlank() && p != null) {
                     val key = "$h:$p"
                     val now = System.currentTimeMillis()
@@ -388,6 +426,7 @@ private fun MainScreen(
                 StepHeader(title = "Step C — Pick & Install (.apk)") {}
 
                 Text("Connect port (auto): ${connectPortText.ifEmpty { "?" }}")
+                Text(adbStatusText)
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
@@ -398,7 +437,7 @@ private fun MainScreen(
                     ) { Text("Pick APK") }
 
                     Button(
-                        enabled = !isBusy && selectedApk != null,
+                        enabled = !isBusy && selectedApk != null && isAdbConnected,
                         onClick = {
                             val apk = selectedApk ?: return@Button
                             scope.launch {
