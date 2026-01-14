@@ -203,7 +203,8 @@ private fun MainScreen(
 
                 if (selectedServiceName == null) {
                     val single = list.singleOrNull()
-                    if (single?.hostString != null && single.pairingPort != null) {
+                    // Auto-select a single discovered device even if only connect info is present.
+                    if (single?.hostString != null && (single.pairingPort != null || single.connectPort != null)) {
                         selectedServiceName = single.serviceName
                         applyDevice(single)
                     }
@@ -218,6 +219,10 @@ private fun MainScreen(
                 val h = candidate?.hostString
                 val p = candidate?.pairingPort
                 val c = candidate?.connectPort
+
+                // Keep connect port text in sync even if pairing isn't discovered yet.
+                if (!h.isNullOrBlank()) host = h
+                if (c != null) connectPortText = c.toString()
 
                 // Background auto-connect + UI indication.
                 if (!h.isNullOrBlank() && c != null) {
@@ -437,7 +442,10 @@ private fun MainScreen(
                     ) { Text("Pick APK") }
 
                     Button(
-                        enabled = !isBusy && selectedApk != null && isAdbConnected,
+                        enabled = !isBusy &&
+                            selectedApk != null &&
+                            isAdbConnected &&
+                            connectPortText.toIntOrNull() != null,
                         onClick = {
                             val apk = selectedApk ?: return@Button
                             scope.launch {
