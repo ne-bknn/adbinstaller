@@ -26,7 +26,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.IconButton
@@ -114,16 +113,13 @@ private fun MainScreen(
     val scope = rememberCoroutineScope()
 
     // Step A: Pair
-    var host by rememberSaveable { mutableStateOf("127.0.0.1") }
+    var host by rememberSaveable { mutableStateOf("") }
     var pairingPortText by rememberSaveable { mutableStateOf("") }
     var pairingCode by rememberSaveable { mutableStateOf("") }
 
     // Auto-discovery (mDNS)
     var discoveredDevices by remember { mutableStateOf<List<AdbMdnsDiscovery.Device>>(emptyList()) }
     var selectedServiceName by rememberSaveable { mutableStateOf<String?>(null) }
-    var showAdvanced by rememberSaveable { mutableStateOf(false) }
-    var traceLogs by rememberSaveable { mutableStateOf(false) }
-    var autoPinNotification by rememberSaveable { mutableStateOf(true) }
     var lastNotifiedKey by rememberSaveable { mutableStateOf<String?>(null) }
     var lastNotifiedAtMs by rememberSaveable { mutableStateOf(0L) }
 
@@ -166,10 +162,10 @@ private fun MainScreen(
         installer.onLog = { line -> logStore.append(line.trimEnd()) }
     }
 
-    LaunchedEffect(traceLogs) {
-        installer.traceEnabled = traceLogs
-        AppLog.level = if (traceLogs) AppLog.Level.TRACE else AppLog.Level.INFO
-        logStore.append(if (traceLogs) "Trace logs enabled." else "Trace logs disabled.")
+    LaunchedEffect(Unit) {
+        installer.traceEnabled = true
+        AppLog.level = AppLog.Level.TRACE
+        logStore.append("Trace logs enabled.")
     }
 
     LaunchedEffect(incoming) {
@@ -206,39 +202,37 @@ private fun MainScreen(
                     val single = list.singleOrNull()
                     if (single?.hostString != null && single.pairingPort != null) {
                         selectedServiceName = single.serviceName
-                        if (!showAdvanced) applyDevice(single)
+                        applyDevice(single)
                     }
                 } else {
                     val selected = list.firstOrNull { it.serviceName == selectedServiceName }
-                    if (selected != null && !showAdvanced) applyDevice(selected)
+                    if (selected != null) applyDevice(selected)
                 }
 
                 // Auto-post pairing notification once mDNS yields a usable endpoint.
-                if (autoPinNotification) {
-                    val candidate = list.firstOrNull { it.serviceName == selectedServiceName }
-                        ?: list.singleOrNull()
-                    val h = candidate?.hostString
-                    val p = candidate?.pairingPort
-                    if (!h.isNullOrBlank() && p != null) {
-                        val key = "$h:$p"
-                        val now = System.currentTimeMillis()
-                        val shouldNotify =
-                            (lastNotifiedKey != key) || (now - lastNotifiedAtMs > 15_000)
+                val candidate = list.firstOrNull { it.serviceName == selectedServiceName }
+                    ?: list.singleOrNull()
+                val h = candidate?.hostString
+                val p = candidate?.pairingPort
+                if (!h.isNullOrBlank() && p != null) {
+                    val key = "$h:$p"
+                    val now = System.currentTimeMillis()
+                    val shouldNotify =
+                        (lastNotifiedKey != key) || (now - lastNotifiedAtMs > 15_000)
 
-                        if (shouldNotify) {
-                            // Don't interrupt the user with permission prompts here; just no-op if blocked.
-                            if (PairingNotification.cannotNotifyReason(context) == null) {
-                                PairingNotification.show(
-                                    context = context,
-                                    host = h,
-                                    pairingPort = p,
-                                    connectPort = candidate.connectPort,
-                                    serviceName = candidate.serviceName,
-                                    onStatus = { msg -> logStore.append(msg.trimEnd()) },
-                                )
-                                lastNotifiedKey = key
-                                lastNotifiedAtMs = now
-                            }
+                    if (shouldNotify) {
+                        // Don't interrupt the user with permission prompts here; just no-op if blocked.
+                        if (PairingNotification.cannotNotifyReason(context) == null) {
+                            PairingNotification.show(
+                                context = context,
+                                host = h,
+                                pairingPort = p,
+                                connectPort = candidate.connectPort,
+                                serviceName = candidate.serviceName,
+                                onStatus = { msg -> logStore.append(msg.trimEnd()) },
+                            )
+                            lastNotifiedKey = key
+                            lastNotifiedAtMs = now
                         }
                     }
                 }
@@ -303,7 +297,7 @@ private fun MainScreen(
 
                             val port = pairingPortText.toIntOrNull()
                             if (host.isBlank() || port == null) {
-                                logStore.append("Select a device (or enable Advanced) so host+pairing port are known.")
+                                logStore.append("Select a device so host+pairing port are known.")
                                 return@Button
                             }
                             val ok = PairingNotification.show(
@@ -344,7 +338,7 @@ private fun MainScreen(
                                 .fillMaxWidth()
                                 .clickable(enabled = !isBusy) {
                                     selectedServiceName = dev.serviceName
-                                    if (!showAdvanced) applyDevice(dev)
+                                    applyDevice(dev)
                                 }
                                 .padding(vertical = 6.dp),
                         ) {
@@ -352,62 +346,6 @@ private fun MainScreen(
                             Text(summary)
                         }
                     }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text("Advanced (manual host/ports)")
-                    Switch(
-                        checked = showAdvanced,
-                        onCheckedChange = { showAdvanced = it },
-                        enabled = !isBusy,
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text("Trace logs (debug)")
-                    Switch(
-                        checked = traceLogs,
-                        onCheckedChange = { traceLogs = it },
-                        enabled = !isBusy,
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text("Auto notification on discovery")
-                    Switch(
-                        checked = autoPinNotification,
-                        onCheckedChange = { autoPinNotification = it },
-                        enabled = !isBusy,
-                    )
-                }
-
-                if (showAdvanced) {
-                    OutlinedTextField(
-                        modifier = Modifier.fillMaxWidth(),
-                        value = host,
-                        onValueChange = { host = it },
-                        label = { Text("Host (Wi‑Fi IP)") },
-                        singleLine = true,
-                    )
-                    OutlinedTextField(
-                        modifier = Modifier.fillMaxWidth(),
-                        value = pairingPortText,
-                        onValueChange = { pairingPortText = it.filter { ch -> ch.isDigit() } },
-                        label = { Text("Pairing port") },
-                        singleLine = true,
-                    )
                 }
 
                 OutlinedTextField(
@@ -427,10 +365,8 @@ private fun MainScreen(
                         scope.launch {
                             isBusy = true
                             try {
-                                if (!showAdvanced) {
-                                    discoveredDevices.firstOrNull { it.serviceName == selectedServiceName }?.let {
-                                        applyDevice(it)
-                                    }
+                                discoveredDevices.firstOrNull { it.serviceName == selectedServiceName }?.let {
+                                    applyDevice(it)
                                 }
                                 val port = pairingPortText.toIntOrNull() ?: error("Invalid pairing port")
                                 withContext(Dispatchers.IO) {
@@ -440,7 +376,7 @@ private fun MainScreen(
                                 logStore.append("Pair failed: ${t.message ?: t::class.java.simpleName}")
                                 // Also emit to logcat so `adb logcat AdbInstaller:V '*':S` captures it.
                                 AppLog.e("AdbInstaller", "Pair failed (caught in UI)", t)
-                                if (traceLogs) logStore.append(AppLog.throwableToMultilineString(t))
+                                logStore.append(AppLog.throwableToMultilineString(t))
                             } finally {
                                 isBusy = false
                             }
@@ -453,17 +389,7 @@ private fun MainScreen(
                     Text("Use the port shown under Wireless debugging → IP address & port.")
                 }
 
-                if (showAdvanced) {
-                    OutlinedTextField(
-                        modifier = Modifier.fillMaxWidth(),
-                        value = connectPortText,
-                        onValueChange = { connectPortText = it.filter { ch -> ch.isDigit() } },
-                        label = { Text("Connect port") },
-                        singleLine = true,
-                    )
-                } else {
-                    Text("Connect port (auto): ${connectPortText.ifEmpty { "?" }}")
-                }
+                Text("Connect port (auto): ${connectPortText.ifEmpty { "?" }}")
 
                 Button(
                     enabled = !isBusy &&
@@ -473,10 +399,8 @@ private fun MainScreen(
                         scope.launch {
                             isBusy = true
                             try {
-                                if (!showAdvanced) {
-                                    discoveredDevices.firstOrNull { it.serviceName == selectedServiceName }?.let {
-                                        applyDevice(it)
-                                    }
+                                discoveredDevices.firstOrNull { it.serviceName == selectedServiceName }?.let {
+                                    applyDevice(it)
                                 }
                                 val port = connectPortText.toIntOrNull() ?: error("Invalid connect port")
                                 withContext(Dispatchers.IO) {
@@ -485,7 +409,7 @@ private fun MainScreen(
                             } catch (t: Throwable) {
                                 logStore.append("Connect failed: ${t.message ?: t::class.java.simpleName}")
                                 AppLog.e("AdbInstaller", "Connect failed (caught in UI)", t)
-                                if (traceLogs) logStore.append(AppLog.throwableToMultilineString(t))
+                                logStore.append(AppLog.throwableToMultilineString(t))
                             } finally {
                                 isBusy = false
                             }
@@ -517,7 +441,7 @@ private fun MainScreen(
                                 } catch (t: Throwable) {
                                     logStore.append("Install failed: ${t.message ?: t::class.java.simpleName}")
                                     AppLog.e("AdbInstaller", "Install failed (caught in UI)", t)
-                                    if (traceLogs) logStore.append(AppLog.throwableToMultilineString(t))
+                                    logStore.append(AppLog.throwableToMultilineString(t))
                                 } finally {
                                     isBusy = false
                                 }
