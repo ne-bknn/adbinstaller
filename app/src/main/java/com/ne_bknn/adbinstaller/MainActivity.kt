@@ -1,0 +1,604 @@
+package com.ne_bknn.adbinstaller
+
+import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.os.Bundle
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.ne_bknn.adbinstaller.apk.ApkSource
+import com.ne_bknn.adbinstaller.install.AdbInstaller
+import com.ne_bknn.adbinstaller.logging.AppLog
+import com.ne_bknn.adbinstaller.mdns.AdbMdnsDiscovery
+import com.ne_bknn.adbinstaller.notifications.PairingNotification
+import com.ne_bknn.adbinstaller.ui.theme.ADBInstallerTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+data class IncomingData(
+    val pairingCode: String? = null,
+    val host: String? = null,
+    val pairingPort: Int? = null,
+    val connectPort: Int? = null,
+    val serviceName: String? = null,
+) {
+    companion object {
+        fun fromIntent(intent: Intent?): IncomingData {
+            if (intent == null) return IncomingData()
+            val pairingCode = intent.getStringExtra(PairingNotification.EXTRA_PAIRING_CODE)
+            val host = intent.getStringExtra(PairingNotification.EXTRA_HOST)
+            val pairingPort = intent.getIntExtra(PairingNotification.EXTRA_PAIRING_PORT, -1).takeIf { it > 0 }
+            val connectPort = intent.getIntExtra(PairingNotification.EXTRA_CONNECT_PORT, -1).takeIf { it > 0 }
+            val serviceName = intent.getStringExtra(PairingNotification.EXTRA_SERVICE_NAME)
+            return IncomingData(
+                pairingCode = pairingCode,
+                host = host,
+                pairingPort = pairingPort,
+                connectPort = connectPort,
+                serviceName = serviceName,
+            )
+        }
+    }
+}
+
+class MainActivity : ComponentActivity() {
+    private var incoming by mutableStateOf(IncomingData())
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        incoming = IncomingData.fromIntent(intent)
+        setContent {
+            ADBInstallerTheme {
+                MainScreen(
+                    incoming = incoming,
+                    onConsumeIncoming = { incoming = IncomingData() },
+                )
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        incoming = IncomingData.fromIntent(intent)
+    }
+}
+
+@Composable
+private fun MainScreen(
+    incoming: IncomingData,
+    onConsumeIncoming: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Step A: Pair
+    var host by rememberSaveable { mutableStateOf("127.0.0.1") }
+    var pairingPortText by rememberSaveable { mutableStateOf("") }
+    var pairingCode by rememberSaveable { mutableStateOf("") }
+
+    // Auto-discovery (mDNS)
+    var discoveredDevices by remember { mutableStateOf<List<AdbMdnsDiscovery.Device>>(emptyList()) }
+    var selectedServiceName by rememberSaveable { mutableStateOf<String?>(null) }
+    var showAdvanced by rememberSaveable { mutableStateOf(false) }
+    var traceLogs by rememberSaveable { mutableStateOf(false) }
+    var autoPinNotification by rememberSaveable { mutableStateOf(true) }
+    var lastNotifiedKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var lastNotifiedAtMs by rememberSaveable { mutableStateOf(0L) }
+
+    // Step B: Connect
+    var connectPortText by rememberSaveable { mutableStateOf("") }
+
+    // Step C: Pick + Install
+    var selectedApk by remember { mutableStateOf<ApkSource?>(null) }
+
+    var isBusy by remember { mutableStateOf(false) }
+    var statusLog by remember { mutableStateOf("Ready.\n") }
+
+    val installer = remember { AdbInstaller(context.applicationContext) }
+
+    val notifPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        statusLog += if (granted) "Notifications permission granted.\n" else "Notifications permission denied.\n"
+    }
+
+    val apkPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            isBusy = true
+            try {
+                val apk = withContext(Dispatchers.IO) { ApkSource.fromUri(context, uri) }
+                selectedApk = apk
+                statusLog += "Picked APK: ${apk.displayName} (${apk.sizeBytes} bytes)\n"
+            } catch (t: Throwable) {
+                statusLog += "Pick failed: ${t.message ?: t::class.java.simpleName}\n"
+            } finally {
+                isBusy = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        installer.onLog = { line -> statusLog += line.trimEnd() + "\n" }
+    }
+
+    LaunchedEffect(traceLogs) {
+        installer.traceEnabled = traceLogs
+        AppLog.level = if (traceLogs) AppLog.Level.TRACE else AppLog.Level.INFO
+        statusLog += if (traceLogs) "Trace logs enabled.\n" else "Trace logs disabled.\n"
+    }
+
+    LaunchedEffect(incoming) {
+        // Apply pairing details received from notification.
+        val any =
+            (incoming.pairingCode != null) ||
+                (incoming.host != null) ||
+                (incoming.pairingPort != null) ||
+                (incoming.connectPort != null)
+        if (!any) return@LaunchedEffect
+
+        incoming.host?.let { host = it }
+        incoming.pairingPort?.let { pairingPortText = it.toString() }
+        incoming.connectPort?.let { connectPortText = it.toString() }
+        incoming.pairingCode?.let { pairingCode = it }
+
+        statusLog += "Received pairing data from notification.\n"
+        onConsumeIncoming()
+    }
+
+    fun applyDevice(device: AdbMdnsDiscovery.Device) {
+        device.hostString?.let { host = it }
+        device.pairingPort?.let { pairingPortText = it.toString() }
+        device.connectPort?.let { connectPortText = it.toString() }
+    }
+
+    DisposableEffect(Unit) {
+        val discovery = AdbMdnsDiscovery(context.applicationContext)
+        discovery.start(
+            onUpdate = { list ->
+                discoveredDevices = list
+
+                if (selectedServiceName == null) {
+                    val single = list.singleOrNull()
+                    if (single?.hostString != null && single.pairingPort != null) {
+                        selectedServiceName = single.serviceName
+                        if (!showAdvanced) applyDevice(single)
+                    }
+                } else {
+                    val selected = list.firstOrNull { it.serviceName == selectedServiceName }
+                    if (selected != null && !showAdvanced) applyDevice(selected)
+                }
+
+                // Auto-post pairing notification once mDNS yields a usable endpoint.
+                if (autoPinNotification) {
+                    val candidate = list.firstOrNull { it.serviceName == selectedServiceName }
+                        ?: list.singleOrNull()
+                    val h = candidate?.hostString
+                    val p = candidate?.pairingPort
+                    if (!h.isNullOrBlank() && p != null) {
+                        val key = "$h:$p"
+                        val now = System.currentTimeMillis()
+                        val shouldNotify =
+                            (lastNotifiedKey != key) || (now - lastNotifiedAtMs > 15_000)
+
+                        if (shouldNotify) {
+                            // Don't interrupt the user with permission prompts here; just no-op if blocked.
+                            if (PairingNotification.cannotNotifyReason(context) == null) {
+                                PairingNotification.show(
+                                    context = context,
+                                    host = h,
+                                    pairingPort = p,
+                                    connectPort = candidate.connectPort,
+                                    serviceName = candidate.serviceName,
+                                    onStatus = { msg -> statusLog += msg.trimEnd() + "\n" },
+                                )
+                                lastNotifiedKey = key
+                                lastNotifiedAtMs = now
+                            }
+                        }
+                    }
+                }
+            },
+            onLog = { line -> statusLog += line.trimEnd() + "\n" },
+        )
+        onDispose { discovery.close() }
+    }
+
+    AppScaffold(
+        isBusy = isBusy,
+        statusLog = statusLog,
+        content = { padding ->
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                StepHeader(title = "Step A — Pair (Wireless debugging)") {
+                    Text("Enable Developer Options → Wireless debugging → Pair device with pairing code.")
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Button(
+                        enabled = !isBusy,
+                        onClick = {
+                            // Best-effort: OEMs differ. Try specific action first, then fall back.
+                            val intents = listOf(
+                                Intent("android.settings.WIRELESS_DEBUGGING_SETTINGS"),
+                                Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
+                                Intent(Settings.ACTION_SETTINGS),
+                            ).map { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+
+                            val launched = intents.any { i ->
+                                try {
+                                    context.startActivity(i)
+                                    true
+                                } catch (_: ActivityNotFoundException) {
+                                    false
+                                }
+                            }
+                            if (!launched) statusLog += "Could not open settings.\n"
+                        },
+                    ) { Text("Open Wireless debugging") }
+
+                    Button(
+                        enabled = !isBusy,
+                        onClick = {
+                            if (!PairingNotification.canPostNotifications(context)) {
+                                notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                return@Button
+                            }
+
+                            val port = pairingPortText.toIntOrNull()
+                            if (host.isBlank() || port == null) {
+                                statusLog += "Select a device (or enable Advanced) so host+pairing port are known.\n"
+                                return@Button
+                            }
+                            val ok = PairingNotification.show(
+                                context = context,
+                                host = host,
+                                pairingPort = port,
+                                connectPort = connectPortText.toIntOrNull(),
+                                serviceName = selectedServiceName,
+                                onStatus = { msg -> statusLog += msg.trimEnd() + "\n" },
+                            )
+                            if (!ok) {
+                                // If notifications are blocked at the OS/channel level, help user jump there.
+                                statusLog += "If you don't see a permission prompt, notifications may be blocked in Settings.\n"
+                                PairingNotification.openChannelNotificationSettings(context)
+                            }
+                        },
+                    ) { Text("PIN via notification") }
+                }
+
+                StepHeader(title = "Auto-detect device (mDNS)") {
+                    Text("If your device is on the same Wi‑Fi, it should appear below. Then you only need to enter the PIN.")
+                }
+
+                if (discoveredDevices.isEmpty()) {
+                    Text("Searching for Wireless debugging devices…")
+                } else {
+                    discoveredDevices.forEach { dev ->
+                        val selected = selectedServiceName == dev.serviceName
+                        val summary = buildString {
+                            append(dev.hostString ?: "?")
+                            append("  pairing:")
+                            append(dev.pairingPort?.toString() ?: "?")
+                            append("  connect:")
+                            append(dev.connectPort?.toString() ?: "?")
+                        }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isBusy) {
+                                    selectedServiceName = dev.serviceName
+                                    if (!showAdvanced) applyDevice(dev)
+                                }
+                                .padding(vertical = 6.dp),
+                        ) {
+                            Text(if (selected) "✓ ${dev.serviceName}" else dev.serviceName)
+                            Text(summary)
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Advanced (manual host/ports)")
+                    Switch(
+                        checked = showAdvanced,
+                        onCheckedChange = { showAdvanced = it },
+                        enabled = !isBusy,
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Trace logs (debug)")
+                    Switch(
+                        checked = traceLogs,
+                        onCheckedChange = { traceLogs = it },
+                        enabled = !isBusy,
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Auto notification on discovery")
+                    Switch(
+                        checked = autoPinNotification,
+                        onCheckedChange = { autoPinNotification = it },
+                        enabled = !isBusy,
+                    )
+                }
+
+                if (showAdvanced) {
+                    OutlinedTextField(
+                        modifier = Modifier.fillMaxWidth(),
+                        value = host,
+                        onValueChange = { host = it },
+                        label = { Text("Host (Wi‑Fi IP)") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        modifier = Modifier.fillMaxWidth(),
+                        value = pairingPortText,
+                        onValueChange = { pairingPortText = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Pairing port") },
+                        singleLine = true,
+                    )
+                }
+
+                OutlinedTextField(
+                    modifier = Modifier.fillMaxWidth(),
+                    value = pairingCode,
+                    onValueChange = { pairingCode = it },
+                    label = { Text("Pairing code (PIN)") },
+                    singleLine = true,
+                )
+
+                Button(
+                    enabled = !isBusy &&
+                        pairingCode.isNotBlank() &&
+                        host.isNotBlank() &&
+                        pairingPortText.toIntOrNull() != null,
+                    onClick = {
+                        scope.launch {
+                            isBusy = true
+                            try {
+                                if (!showAdvanced) {
+                                    discoveredDevices.firstOrNull { it.serviceName == selectedServiceName }?.let {
+                                        applyDevice(it)
+                                    }
+                                }
+                                val port = pairingPortText.toIntOrNull() ?: error("Invalid pairing port")
+                                withContext(Dispatchers.IO) {
+                                    installer.pair(host = host, pairingPort = port, pairingCode = pairingCode)
+                                }
+                            } catch (t: Throwable) {
+                                statusLog += "Pair failed: ${t.message ?: t::class.java.simpleName}\n"
+                                if (traceLogs) {
+                                    // Also emit to logcat so `adb logcat AdbInstaller:V '*':S` captures it.
+                                    AppLog.e("AdbInstaller", "Pair failed (caught in UI)", t)
+                                    statusLog += AppLog.throwableToMultilineString(t) + "\n"
+                                }
+                            } finally {
+                                isBusy = false
+                            }
+                        }
+                    }
+                ) { Text("Pair") }
+
+                Spacer(Modifier.height(12.dp))
+                StepHeader(title = "Step B — Connect") {
+                    Text("Use the port shown under Wireless debugging → IP address & port.")
+                }
+
+                if (showAdvanced) {
+                    OutlinedTextField(
+                        modifier = Modifier.fillMaxWidth(),
+                        value = connectPortText,
+                        onValueChange = { connectPortText = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Connect port") },
+                        singleLine = true,
+                    )
+                } else {
+                    Text("Connect port (auto): ${connectPortText.ifEmpty { "?" }}")
+                }
+
+                Button(
+                    enabled = !isBusy &&
+                        host.isNotBlank() &&
+                        connectPortText.toIntOrNull() != null,
+                    onClick = {
+                        scope.launch {
+                            isBusy = true
+                            try {
+                                if (!showAdvanced) {
+                                    discoveredDevices.firstOrNull { it.serviceName == selectedServiceName }?.let {
+                                        applyDevice(it)
+                                    }
+                                }
+                                val port = connectPortText.toIntOrNull() ?: error("Invalid connect port")
+                                withContext(Dispatchers.IO) {
+                                    installer.connect(host = host, connectPort = port)
+                                }
+                            } catch (t: Throwable) {
+                                statusLog += "Connect failed: ${t.message ?: t::class.java.simpleName}\n"
+                                if (traceLogs) {
+                                    AppLog.e("AdbInstaller", "Connect failed (caught in UI)", t)
+                                    statusLog += AppLog.throwableToMultilineString(t) + "\n"
+                                }
+                            } finally {
+                                isBusy = false
+                            }
+                        }
+                    }
+                ) { Text("Connect") }
+
+                Spacer(Modifier.height(12.dp))
+                StepHeader(title = "Step C — Pick & Install (.apk)") {}
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        enabled = !isBusy,
+                        onClick = {
+                            apkPicker.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream"))
+                        }
+                    ) { Text("Pick APK") }
+
+                    Button(
+                        enabled = !isBusy && selectedApk != null,
+                        onClick = {
+                            val apk = selectedApk ?: return@Button
+                            scope.launch {
+                                isBusy = true
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        installer.install(apk)
+                                    }
+                                } catch (t: Throwable) {
+                                    statusLog += "Install failed: ${t.message ?: t::class.java.simpleName}\n"
+                                    if (traceLogs) {
+                                        AppLog.e("AdbInstaller", "Install failed (caught in UI)", t)
+                                        statusLog += AppLog.throwableToMultilineString(t) + "\n"
+                                    }
+                                } finally {
+                                    isBusy = false
+                                }
+                            }
+                        }
+                    ) { Text("Install via ADB") }
+                }
+
+                if (selectedApk != null) {
+                    Text("Selected: ${selectedApk!!.displayName}")
+                } else {
+                    Text("No APK selected.")
+                }
+            }
+        }
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun GreetingPreview() {
+    ADBInstallerTheme {
+        MainScreen(incoming = IncomingData(), onConsumeIncoming = {})
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppScaffold(
+    isBusy: Boolean,
+    statusLog: String,
+    content: @Composable (androidx.compose.foundation.layout.PaddingValues) -> Unit,
+) {
+    val screenHeightDp = LocalConfiguration.current.screenHeightDp
+    val logScroll = rememberScrollState()
+    LaunchedEffect(statusLog.length) {
+        // Keep the view anchored to the newest logs.
+        logScroll.scrollTo(logScroll.maxValue)
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("ADB Installer") },
+                actions = {
+                    if (isBusy) {
+                        CircularProgressIndicator(modifier = Modifier.padding(end = 16.dp))
+                    }
+                }
+            )
+        },
+        modifier = Modifier.fillMaxSize(),
+        bottomBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height((screenHeightDp.dp * 0.5f))
+                    .padding(12.dp),
+            ) {
+                Text("Status")
+                Text(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .verticalScroll(logScroll),
+                    text = statusLog.takeLast(8000),
+                )
+            }
+        },
+        content = content,
+    )
+}
+
+@Composable
+private fun StepHeader(
+    title: String,
+    subtitle: @Composable () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(title)
+        subtitle()
+    }
+}
